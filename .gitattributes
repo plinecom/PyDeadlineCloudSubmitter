@@ -1,0 +1,40 @@
+# Default: auto-detect text, normalize to LF on commit, check out as LF.
+# Workers run on Linux, and the OpenJD templates embed bash scripts —
+# CRLF in those would break shell execution. Force LF for all text files.
+* text=auto eol=lf
+
+# Source / config — explicit LF
+*.py        text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.sh        text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+*.toml      text eol=lf
+*.cfg       text eol=lf
+*.ini       text eol=lf
+*.json      text eol=lf
+.gitignore  text eol=lf
+.gitattributes text eol=lf
+LICENSE     text eol=lf
+
+# Windows-only scripts keep CRLF
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Binary assets — never normalize
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.webp      binary
+*.ico       binary
+*.pdf       binary
+*.zip       binary
+*.gz        binary
+*.zst       binary
+
+# DCC scene files
+*.blend     binary
+*.nk        text eol=lf
