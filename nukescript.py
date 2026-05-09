@@ -439,6 +439,15 @@ def _expand_pattern(pattern_path: Path) -> List[Path]:
     return sorted(matches)
 
 
+# Common Nuke idiom: `[python {nuke.script_directory()}]` (often serialized
+# with Tcl backslash-escapes as ``\[python \{nuke.script_directory()\}]``)
+# resolves at runtime to the directory containing the .nk file. We can
+# substitute it statically at submit time.
+_SCRIPT_DIR_TCL_RE = re.compile(
+    r"\\?\[python\s+\\?\{?\s*nuke\.script_directory\(\)\s*\\?\}?\s*\\?\]"
+)
+
+
 def _resolve_nuke_path(raw: str, referrer: Path) -> Optional[Path]:
     """Resolve a raw Nuke file knob value to an absolute path.
 
@@ -449,6 +458,11 @@ def _resolve_nuke_path(raw: str, referrer: Path) -> Optional[Path]:
     """
     if not raw:
         return None
+    # Substitute the well-known nuke.script_directory() idiom before checking
+    # for unresolvable Tcl expressions. Use a lambda so backslashes in the
+    # Windows path aren't interpreted as re replacement-template escapes.
+    script_dir = str(referrer.parent)
+    raw = _SCRIPT_DIR_TCL_RE.sub(lambda _m: script_dir, raw)
     # Tcl/Python expressions — too dynamic to resolve statically.
     if "[" in raw and "]" in raw:
         return None
