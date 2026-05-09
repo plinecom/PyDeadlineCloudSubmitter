@@ -1,0 +1,155 @@
+specificationVersion: jobtemplate-2023-09
+extensions:
+  - TASK_CHUNKING
+
+name: BlenderSplashRender
+
+parameterDefinitions:
+  - name: SceneFile
+    type: PATH
+    objectType: FILE
+    dataFlow: IN
+    description: "Local .blend file. Uploaded to Job Attachments at submit time and remapped to a session-local path on the worker."
+  - name: Frames
+    type: STRING
+    default: "1-10"
+  - name: OutputPath
+    type: STRING
+    default: "//frame_####"
+    description: "Blender pic value: directory + filename pattern. '//' prefix is stripped on the worker; the result is rendered under OutputDir so Job Attachments can sync it back."
+  - name: OutputDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: OUT
+    default: "./outputs"
+  - name: FramesPerTask
+    type: INT
+    default: 1
+    minValue: 1
+    description: "Frames per task (OpenJD chunks.defaultTaskCount). Note: this farm currently does not honor TASK_CHUNKING — every frame still becomes its own task regardless of value."
+  - name: Camera
+    type: STRING
+    default: ""
+    description: "Active camera object name (Object.id.name without 'OB' prefix). Empty = use scene's current camera."
+  - name: ViewLayer
+    type: STRING
+    default: ""
+    description: "View Layer to render. Empty = render all enabled layers."
+  - name: OutputFormat
+    type: STRING
+    default: ""
+    description: "Render output format (Blender bpy ImageFormatSettings.file_format enum, e.g. 'PNG', 'OPEN_EXR'). Empty = use scene's stored format."
+
+steps:
+  - name: RenderStep
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: CHUNK[INT]
+          range: "{{Param.Frames}}"
+          chunks:
+            defaultTaskCount: "{{Param.FramesPerTask}}"
+            rangeConstraint: CONTIGUOUS
+
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "{{Task.File.Run}}"
+
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            SCENE_FILE="{{Param.SceneFile}}"
+            FRAME_RANGE="{{Task.Param.Frame}}"
+            OUTPUT_PATH="{{Param.OutputPath}}"
+            OUTPUT_DIR="{{Param.OutputDir}}"
+            CAMERA="{{Param.Camera}}"
+            VIEW_LAYER="{{Param.ViewLayer}}"
+            OUTPUT_FORMAT="{{Param.OutputFormat}}"
+
+            if [[ "$FRAME_RANGE" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+              START="${BASH_REMATCH[1]}"
+              END="${BASH_REMATCH[2]}"
+            elif [[ "$FRAME_RANGE" =~ ^([0-9]+)$ ]]; then
+              START="${BASH_REMATCH[1]}"
+              END="${BASH_REMATCH[1]}"
+            else
+              echo "Unexpected frame chunk: $FRAME_RANGE" >&2
+              exit 1
+            fi
+
+            mkdir -p "$OUTPUT_DIR"
+
+            # Strip Blender's "//" (or single "/") prefix from the user's
+            # OutputPath and re-root it under OUTPUT_DIR so Job Attachments
+            # (which syncs OUTPUT_DIR back to S3) picks up the rendered files.
+            case "$OUTPUT_PATH" in
+              //*) REL_OUT="${OUTPUT_PATH#//}" ;;
+              /*)  REL_OUT="${OUTPUT_PATH#/}" ;;
+              *)   REL_OUT="$OUTPUT_PATH" ;;
+            esac
+            FULL_OUT="$OUTPUT_DIR/$REL_OUT"
+            mkdir -p "$(dirname "$FULL_OUT")"
+
+            # Blender has no CLI flag for camera / view-layer / format that
+            # covers our needs reliably, so all three go through a single
+            # --python-expr. Wrapped in try/except so an issue setting up
+            # scene state doesn't abort the render.
+            EXTRA_ARGS=()
+            if [ -n "$CAMERA" ] || [ -n "$VIEW_LAYER" ] || [ -n "$OUTPUT_FORMAT" ]; then
+              PYEXPR=$(cat <<EOF
+            import bpy
+            try:
+                scene = bpy.context.scene
+                cam_name = '$CAMERA'
+                vl_name = '$VIEW_LAYER'
+                fmt = '$OUTPUT_FORMAT'
+                if cam_name:
+                    cam = bpy.data.objects.get(cam_name)
+                    if cam and cam.type == 'CAMERA':
+                        scene.camera = cam
+                    else:
+                        print('WARNING: camera not found or not a CAMERA:', cam_name)
+                if vl_name:
+                    scene.render.use_single_layer = True
+                    vl = scene.view_layers.get(vl_name)
+                    if vl is None:
+                        print('WARNING: view layer not found:', vl_name)
+                    else:
+                        wm = bpy.context.window_manager
+                        if wm and len(wm.windows) > 0:
+                            wm.windows[0].view_layer = vl
+                        elif bpy.context.window is not None:
+                            bpy.context.window.view_layer = vl
+                        else:
+                            print('WARNING: no window available; cannot set active view layer')
+                if fmt:
+                    try:
+                        scene.render.image_settings.file_format = fmt
+                    except (TypeError, ValueError) as exc:
+                        print('WARNING: invalid output format:', fmt, repr(exc))
+            except Exception as exc:
+                print('WARNING: scene setup failed:', repr(exc))
+            EOF
+            )
+              EXTRA_ARGS+=(--python-expr "$PYEXPR")
+            fi
+
+            echo "Rendering frames $START-$END with Blender from $SCENE_FILE -> $FULL_OUT"
+            echo "  camera=${CAMERA:-(scene default)}  view_layer=${VIEW_LAYER:-(all enabled)}"
+            # --enable-autoexec: allow embedded Python drivers / addon scripts
+            # in the .blend to run. Required by scenes that drive properties via
+            # PyDriver expressions (Blender disables auto-exec by default for
+            # security). The .blend was uploaded by the submitter so trusting
+            # its scripts is the right default in this submission flow.
+            blender -b "$SCENE_FILE" --enable-autoexec "${EXTRA_ARGS[@]}" \
+              -o "$FULL_OUT" \
+              -s "$START" -e "$END" -a
+
+            ls -la "$OUTPUT_DIR"

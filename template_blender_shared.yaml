@@ -1,0 +1,140 @@
+specificationVersion: jobtemplate-2023-09
+extensions:
+  - TASK_CHUNKING
+
+name: BlenderSplashRender (shared storage)
+
+# Shared-storage variant of template_blender.yaml. The submitter and the
+# render workers share the same NAS mount, so SceneFile is passed through
+# as a literal STRING — deadline-client neither uploads it via Job
+# Attachments nor remaps the path. Output also stays on the NAS at whatever
+# OutputPath resolves to (Blender resolves "//" relative to the .blend's
+# directory, which is the same NAS dir on both sides).
+
+parameterDefinitions:
+  - name: SceneFile
+    type: STRING
+    description: "Absolute path to the .blend on shared storage. Worker reads it directly; no Job Attachments upload."
+  - name: Frames
+    type: STRING
+    default: "1-10"
+  - name: OutputPath
+    type: STRING
+    default: "//frame_####"
+    description: "Blender pic value. Passed to `blender -o` as-is. '//' resolves to the .blend's directory on the shared NAS."
+  - name: FramesPerTask
+    type: INT
+    default: 1
+    minValue: 1
+    description: "Frames per task (OpenJD chunks.defaultTaskCount). Note: this farm currently does not honor TASK_CHUNKING — every frame still becomes its own task regardless of value."
+  - name: Camera
+    type: STRING
+    default: ""
+    description: "Active camera object name (Object.id.name without 'OB' prefix). Empty = use scene's current camera."
+  - name: ViewLayer
+    type: STRING
+    default: ""
+    description: "View Layer to render. Empty = render all enabled layers."
+  - name: OutputFormat
+    type: STRING
+    default: ""
+    description: "Render output format (Blender bpy ImageFormatSettings.file_format enum, e.g. 'PNG', 'OPEN_EXR'). Empty = use scene's stored format."
+
+steps:
+  - name: RenderStep
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: CHUNK[INT]
+          range: "{{Param.Frames}}"
+          chunks:
+            defaultTaskCount: "{{Param.FramesPerTask}}"
+            rangeConstraint: CONTIGUOUS
+
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "{{Task.File.Run}}"
+
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            SCENE_FILE="{{Param.SceneFile}}"
+            FRAME_RANGE="{{Task.Param.Frame}}"
+            OUTPUT_PATH="{{Param.OutputPath}}"
+            CAMERA="{{Param.Camera}}"
+            VIEW_LAYER="{{Param.ViewLayer}}"
+            OUTPUT_FORMAT="{{Param.OutputFormat}}"
+
+            if [[ "$FRAME_RANGE" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+              START="${BASH_REMATCH[1]}"
+              END="${BASH_REMATCH[2]}"
+            elif [[ "$FRAME_RANGE" =~ ^([0-9]+)$ ]]; then
+              START="${BASH_REMATCH[1]}"
+              END="${BASH_REMATCH[1]}"
+            else
+              echo "Unexpected frame chunk: $FRAME_RANGE" >&2
+              exit 1
+            fi
+
+            # Shared-storage mode: pass OutputPath to Blender unmodified.
+            # Blender resolves "//..." against the .blend's directory (same
+            # NAS dir on the worker as on the submitter). For absolute
+            # paths, ensure the parent dir exists since Blender won't create
+            # arbitrary parents itself.
+            case "$OUTPUT_PATH" in
+              //*) ;;
+              /*)  mkdir -p "$(dirname "$OUTPUT_PATH")" ;;
+            esac
+
+            EXTRA_ARGS=()
+            if [ -n "$CAMERA" ] || [ -n "$VIEW_LAYER" ] || [ -n "$OUTPUT_FORMAT" ]; then
+              PYEXPR=$(cat <<EOF
+            import bpy
+            try:
+                scene = bpy.context.scene
+                cam_name = '$CAMERA'
+                vl_name = '$VIEW_LAYER'
+                fmt = '$OUTPUT_FORMAT'
+                if cam_name:
+                    cam = bpy.data.objects.get(cam_name)
+                    if cam and cam.type == 'CAMERA':
+                        scene.camera = cam
+                    else:
+                        print('WARNING: camera not found or not a CAMERA:', cam_name)
+                if vl_name:
+                    scene.render.use_single_layer = True
+                    vl = scene.view_layers.get(vl_name)
+                    if vl is None:
+                        print('WARNING: view layer not found:', vl_name)
+                    else:
+                        wm = bpy.context.window_manager
+                        if wm and len(wm.windows) > 0:
+                            wm.windows[0].view_layer = vl
+                        elif bpy.context.window is not None:
+                            bpy.context.window.view_layer = vl
+                        else:
+                            print('WARNING: no window available; cannot set active view layer')
+                if fmt:
+                    try:
+                        scene.render.image_settings.file_format = fmt
+                    except (TypeError, ValueError) as exc:
+                        print('WARNING: invalid output format:', fmt, repr(exc))
+            except Exception as exc:
+                print('WARNING: scene setup failed:', repr(exc))
+            EOF
+            )
+              EXTRA_ARGS+=(--python-expr "$PYEXPR")
+            fi
+
+            echo "Rendering frames $START-$END with Blender (shared storage) from $SCENE_FILE -> $OUTPUT_PATH"
+            echo "  camera=${CAMERA:-(scene default)}  view_layer=${VIEW_LAYER:-(all enabled)}"
+            blender -b "$SCENE_FILE" --enable-autoexec "${EXTRA_ARGS[@]}" \
+              -o "$OUTPUT_PATH" \
+              -s "$START" -e "$END" -a

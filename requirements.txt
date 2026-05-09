@@ -1,0 +1,27 @@
+# PyDeadlineCloudSubmitter runtime dependencies.
+#
+# Install into the project venv (Python 3.12 or newer):
+#   .venv\Scripts\pip install -r requirements.txt
+
+# AWS Deadline Cloud client. Transitively pulls boto3 / botocore.
+deadline>=0.55.1
+
+# Qt GUI toolkit. Need >=6.4 for QFormLayout.setRowVisible (used by
+# the dual Blender/Nuke panel switching in gui.py).
+PySide6>=6.4
+
+# Dark theme. GUI falls back gracefully if absent (see _apply_dark_theme),
+# but the default Qt look is noticeably worse on Windows. Comment out if
+# you want to skip it.
+pyqtdarktheme>=0.1.0
+
+# Used to write asset_references.yaml in the per-submit bundle dir.
+# Already pulled in transitively by `deadline`, but pinned here so the
+# dependency is explicit.
+PyYAML>=6.0
+
+# Zstd decompression for modern Blender .blend files. Blender 3.0+ writes
+# .blend files in Zstd by default. Python 3.14 has `compression.zstd` in
+# the stdlib, but to keep this project usable on Python 3.12-3.13 we depend
+# on the PyPI `zstandard` package unconditionally.
+zstandard>=0.20

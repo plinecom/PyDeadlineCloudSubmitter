@@ -1,0 +1,86 @@
+specificationVersion: jobtemplate-2023-09
+extensions:
+  - TASK_CHUNKING
+
+name: NukeXRender (shared storage)
+
+# Shared-storage variant of template_nuke.yaml. Submitter and workers share
+# the same NAS mount, so Read/Write paths in the .nk are valid on the worker
+# without any remapping. SceneFile is passed as a literal STRING (no Job
+# Attachments upload), and nuke_init.py is NOT used — the script's own Read
+# and Write paths are honored as-is.
+
+parameterDefinitions:
+  - name: SceneFile
+    type: STRING
+    description: "Absolute path to the .nk on shared storage. Worker reads it directly; no Job Attachments upload."
+  - name: Frames
+    type: STRING
+    default: "1-1"
+  - name: FramesPerTask
+    type: INT
+    default: 1
+    minValue: 1
+    description: "Frames per task (OpenJD chunks.defaultTaskCount). Note: this farm currently does not honor TASK_CHUNKING — every frame still becomes its own task regardless of value."
+  - name: WriteNode
+    type: STRING
+    default: ""
+    description: "Write node name to render (Nuke -X). Empty = render every enabled Write node in the script."
+  - name: Views
+    type: STRING
+    default: ""
+    description: "Comma-separated view names (Nuke --view). Empty = use the script's default view set."
+
+steps:
+  - name: RenderStep
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: CHUNK[INT]
+          range: "{{Param.Frames}}"
+          chunks:
+            defaultTaskCount: "{{Param.FramesPerTask}}"
+            rangeConstraint: CONTIGUOUS
+
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "{{Task.File.Run}}"
+
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            SCENE_FILE="{{Param.SceneFile}}"
+            FRAME_RANGE="{{Task.Param.Frame}}"
+            WRITE_NODE="{{Param.WriteNode}}"
+            VIEWS="{{Param.Views}}"
+
+            if [[ "$FRAME_RANGE" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+              START="${BASH_REMATCH[1]}"
+              END="${BASH_REMATCH[2]}"
+            elif [[ "$FRAME_RANGE" =~ ^([0-9]+)$ ]]; then
+              START="${BASH_REMATCH[1]}"
+              END="${BASH_REMATCH[1]}"
+            else
+              echo "Unexpected frame chunk: $FRAME_RANGE" >&2
+              exit 1
+            fi
+
+            EXTRA_ARGS=()
+            if [ -n "$WRITE_NODE" ]; then
+              EXTRA_ARGS+=(-X "$WRITE_NODE")
+            fi
+            if [ -n "$VIEWS" ]; then
+              EXTRA_ARGS+=(--view "$VIEWS")
+            fi
+
+            echo "Rendering frames $START-$END with Nuke (shared storage) from $SCENE_FILE"
+            echo "  write_node=${WRITE_NODE:-(all enabled)}  views=${VIEWS:-(default)}"
+
+            nuke -x -F "$START-$END" "${EXTRA_ARGS[@]}" "$SCENE_FILE"

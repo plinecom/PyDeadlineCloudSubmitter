@@ -1,0 +1,128 @@
+specificationVersion: jobtemplate-2023-09
+extensions:
+  - TASK_CHUNKING
+
+name: NukeXRender
+
+parameterDefinitions:
+  - name: SceneFile
+    type: PATH
+    objectType: FILE
+    dataFlow: IN
+    description: "Local .nk script. Uploaded to Job Attachments at submit time and remapped to a session-local path on the worker."
+  - name: SceneFileOriginal
+    type: STRING
+    description: "Original (un-remapped) submitter-side path of SceneFile. STRING-typed so deadline-client does NOT remap it. Combined with the remapped SceneFile on the worker, this lets nuke_init.py derive a generic submitter-prefix → assetroot-prefix mapping for in-script Read paths when the worker doesn't expose a path-mapping rules JSON."
+  - name: NukeInit
+    type: PATH
+    objectType: FILE
+    dataFlow: IN
+    description: "PyDeadlineCloudSubmitter-supplied init.py loaded via NUKE_PATH on the worker. Rewrites every Write node's `file` to live under OutputDir so Job Attachments can sync renders back."
+  - name: Frames
+    type: STRING
+    default: "1-1"
+  - name: OutputDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: OUT
+    default: "./outputs"
+  - name: FramesPerTask
+    type: INT
+    default: 1
+    minValue: 1
+    description: "Frames per task (OpenJD chunks.defaultTaskCount). Note: this farm currently does not honor TASK_CHUNKING — every frame still becomes its own task regardless of value."
+  - name: WriteNode
+    type: STRING
+    default: ""
+    description: "Write node name to render (Nuke -X). Empty = render every enabled Write node in the script."
+  - name: Views
+    type: STRING
+    default: ""
+    description: "Comma-separated view names (Nuke --view). Empty = use the script's default view set."
+
+steps:
+  - name: RenderStep
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: CHUNK[INT]
+          range: "{{Param.Frames}}"
+          chunks:
+            defaultTaskCount: "{{Param.FramesPerTask}}"
+            rangeConstraint: CONTIGUOUS
+
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "{{Task.File.Run}}"
+
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            SCENE_FILE="{{Param.SceneFile}}"
+            SCENE_FILE_ORIGINAL="{{Param.SceneFileOriginal}}"
+            NUKE_INIT_FILE="{{Param.NukeInit}}"
+            FRAME_RANGE="{{Task.Param.Frame}}"
+            OUTPUT_DIR="{{Param.OutputDir}}"
+            WRITE_NODE="{{Param.WriteNode}}"
+            VIEWS="{{Param.Views}}"
+
+            if [[ "$FRAME_RANGE" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+              START="${BASH_REMATCH[1]}"
+              END="${BASH_REMATCH[2]}"
+            elif [[ "$FRAME_RANGE" =~ ^([0-9]+)$ ]]; then
+              START="${BASH_REMATCH[1]}"
+              END="${BASH_REMATCH[1]}"
+            else
+              echo "Unexpected frame chunk: $FRAME_RANGE" >&2
+              exit 1
+            fi
+
+            mkdir -p "$OUTPUT_DIR"
+
+            # NUKE_PATH controls where Nuke looks for init.py on startup.
+            # The file Nuke loads MUST be named `init.py`, so we stage the
+            # PyDeadlineCloudSubmitter-supplied script (delivered as `nuke_init.py` to keep
+            # the project root tidy) into a fresh temp dir under that name.
+            # Its addOnScriptLoad callback then rewrites Write paths under
+            # OUTPUT_DIR. PYSUBMIT_OUTPUT_DIR is read by the callback to
+            # know the per-task output root.
+            NUKE_INIT_DIR="$(mktemp -d -t pysubmit-nukepath-XXXXXX)"
+            cp "$NUKE_INIT_FILE" "$NUKE_INIT_DIR/init.py"
+            export NUKE_PATH="${NUKE_INIT_DIR}${NUKE_PATH:+:$NUKE_PATH}"
+            export PYSUBMIT_OUTPUT_DIR="$OUTPUT_DIR"
+            # Hand the original (Windows) submitter path AND the remapped
+            # worker path to nuke_init.py so it can derive a prefix mapping
+            # for in-script Read references. This is the fallback for
+            # fleets that don't expose an OpenJD path-mapping rules file.
+            export PYSUBMIT_SCENE_FILE_SOURCE="$SCENE_FILE_ORIGINAL"
+            export PYSUBMIT_SCENE_FILE_DEST="$SCENE_FILE"
+
+            EXTRA_ARGS=()
+            if [ -n "$WRITE_NODE" ]; then
+              EXTRA_ARGS+=(-X "$WRITE_NODE")
+            fi
+            if [ -n "$VIEWS" ]; then
+              EXTRA_ARGS+=(--view "$VIEWS")
+            fi
+
+            echo "Rendering frames $START-$END with Nuke from $SCENE_FILE -> $OUTPUT_DIR"
+            echo "  write_node=${WRITE_NODE:-(all enabled)}  views=${VIEWS:-(default)}"
+            echo "  NUKE_PATH=$NUKE_PATH"
+
+            # `nuke -x` is non-interactive render mode and consumes a free
+            # Nuke render license. `--nukex` would request a NukeX license,
+            # but in render mode (`-x`) the fleet falls back to plain Nuke
+            # with a warning — so we omit `--nukex` and rely on plain Nuke
+            # nodes. If a script needs NukeX-only nodes (e.g. Deep tools,
+            # Furnace, RotoPaint), switch to `--nukex -i` and accept the
+            # interactive-license cost.
+            nuke -x -F "$START-$END" "${EXTRA_ARGS[@]}" "$SCENE_FILE"
+
+            ls -la "$OUTPUT_DIR"

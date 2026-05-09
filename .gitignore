@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# IDE
+.idea/
+*.iml
+
+# Blender (large binary scene files; download/sync separately)
+*.blend
+*.blend1
+*.blend2
+
+# Nuke (test scripts dropped into the repo for local debugging)
+*.nk
+*.nk~
+*.autosave
+
+# Deadline Cloud
+outputs/
+
+# Claude Code
+.claude/
