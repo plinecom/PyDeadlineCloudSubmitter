@@ -1,0 +1,79 @@
+# PyDeadlineCloudSubmitter project metadata.
+#
+# This file is primarily for tooling consumption (IDEs, linters,
+# dependency scanners) — the project is run directly via
+# `python gui.py` rather than installed as a package. The
+# [build-system] block and [tool.setuptools] py-modules are kept
+# explicit so `pip install .` / `pip install -e .` still works
+# for those who want a console-script entry point.
+#
+# Note: the OpenJD templates (template_*.yaml) and nuke_init.py are
+# loaded relative to gui.py via Path(__file__).parent. If you install
+# this as a wheel they won't be packaged automatically — keep using
+# `python gui.py` from a clone for now.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pydeadlinecloudsubmitter"
+version = "0.1.0"
+description = "AWS Deadline Cloud job submitter for Blender and NukeX renders (PySide6 GUI)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Masataka Koike" },
+]
+keywords = [
+    "aws",
+    "deadline-cloud",
+    "blender",
+    "nuke",
+    "nukex",
+    "render-farm",
+    "pyside6",
+    "openjd",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics :: 3D Rendering",
+]
+
+# Mirror requirements.txt. Both files are kept in sync by hand —
+# requirements.txt has comments explaining each pin, this file is
+# the machine-readable form.
+dependencies = [
+    "deadline>=0.55.1",
+    "PySide6>=6.4",
+    "pyqtdarktheme>=0.1.0",
+    "PyYAML>=6.0",
+    "zstandard>=0.20",
+]
+
+[project.urls]
+Repository = "https://github.com/plinecom/PyDeadlineCloudSubmitter"
+Issues = "https://github.com/plinecom/PyDeadlineCloudSubmitter/issues"
+
+[project.gui-scripts]
+pysubmit = "gui:main"
+
+# Flat layout — multiple top-level modules at repo root. List them
+# explicitly so setuptools doesn't error out on auto-discovery.
+[tool.setuptools]
+py-modules = [
+    "gui",
+    "main",
+    "blendfile",
+    "nukescript",
+    "nuke_init",
+]
