@@ -430,17 +430,22 @@ class HistoryEntry:
     def job_name(self) -> str:
         """Job name shown in DeadlineCloud Monitor.
 
-        Always starts with the scene filename (with extension); for Blender
-        entries, appends ``_<camera>`` and/or ``_<view_layer>`` when the
-        user has chosen specific values, so multiple submissions of the
-        same .blend with different camera/layer settings can be told
-        apart in the queue.
+        Always starts with the scene filename (with extension); appends
+        per-app render-target identifiers when the user has narrowed the
+        submission, so multiple submissions of the same scene with
+        different settings can be told apart in the queue:
+
+        - Blender: ``_<camera>`` / ``_<view_layer>`` (each only when set)
+        - Nuke:    ``_<write_node>`` (only when a single Write is targeted)
         """
         base = Path(self.path).name
         if self.scene_type == SCENE_TYPE_BLENDER:
-            suffix = "_".join(p for p in (self.camera, self.view_layer) if p)
-            if suffix:
-                return f"{base}_{suffix}"
+            parts = (self.camera, self.view_layer)
+        else:
+            parts = (self.write_node,)
+        suffix = "_".join(p for p in parts if p)
+        if suffix:
+            return f"{base}_{suffix}"
         return base
 
     @property
