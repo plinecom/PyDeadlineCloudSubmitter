@@ -297,12 +297,14 @@ class SubmitWorker(QObject):
         job_parameters: list,
         priority: int,
         config,
+        name: Optional[str] = None,
     ) -> None:
         super().__init__()
         self._bundle_dir = bundle_dir
         self._job_parameters = job_parameters
         self._priority = priority
         self._config = config
+        self._name = name
 
     def run(self) -> None:
         def on_print(msg: str) -> None:
@@ -322,6 +324,7 @@ class SubmitWorker(QObject):
                 job_parameters=self._job_parameters,
                 priority=self._priority,
                 config=self._config,
+                name=self._name,
                 print_function_callback=on_print,
                 hashing_progress_callback=on_hash_progress,
                 upload_progress_callback=on_upload_progress,
@@ -422,6 +425,23 @@ class HistoryEntry:
     @property
     def display_name(self) -> str:
         return Path(self.path).name
+
+    @property
+    def job_name(self) -> str:
+        """Job name shown in DeadlineCloud Monitor.
+
+        Always starts with the scene filename (with extension); for Blender
+        entries, appends ``_<camera>`` and/or ``_<view_layer>`` when the
+        user has chosen specific values, so multiple submissions of the
+        same .blend with different camera/layer settings can be told
+        apart in the queue.
+        """
+        base = Path(self.path).name
+        if self.scene_type == SCENE_TYPE_BLENDER:
+            suffix = "_".join(p for p in (self.camera, self.view_layer) if p)
+            if suffix:
+                return f"{base}_{suffix}"
+        return base
 
     @property
     def status_marker(self) -> str:
@@ -1394,6 +1414,7 @@ class MainWindow(QMainWindow):
         self.submission.submit_btn.setEnabled(False)
         self.submission.begin_progress()
         self._log(f"Submitting {entry.display_name}…")
+        self._log(f"  job name: {entry.job_name}")
         self._log(f"  farm:     {entry.farm_id}")
         self._log(f"  queue:    {entry.queue_id}")
         self._log(f"  priority: {entry.priority}")
@@ -1414,6 +1435,7 @@ class MainWindow(QMainWindow):
             job_parameters=job_parameters,
             priority=entry.priority,
             config=config,
+            name=entry.job_name,
         )
         # Stash the temp bundle path so we can clean it up after the thread
         # finishes (whether successful or not).
