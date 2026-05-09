@@ -527,6 +527,23 @@ _EXTERNAL_RECIPES = [
 ]
 
 
+# Fields that indicate the asset is packed *inside* the .blend file rather
+# than living on disk: Blender's splash scenes (and any user "File → External
+# Data → Pack Resources" workflow) keep the original on-disk path on the
+# datablock for reference, but the bytes are embedded — so the path should
+# NOT be reported as a missing external ref.
+#
+# `packedfile` is a `PackedFile *` (legacy / single-file datablocks).
+# `packedfiles` is a `ListBase` for UDIM/tiled images; its first 8/4 bytes
+# are the `first*` pointer, so reading a single ptr_size at the field offset
+# tells us whether the list is non-empty — same check as a plain pointer.
+_PACKED_INDICATOR_FIELDS = {
+    "Image":  ("packedfile", "packedfiles"),
+    "bSound": ("packedfile",),
+    "VFont":  ("packedfile",),
+}
+
+
 def _resolve_blend_path(raw: str, referrer: Path) -> Path:
     """Resolve a Blender path. `//` prefix means relative to the .blend dir."""
     if raw.startswith("//"):
@@ -656,6 +673,8 @@ def _read_external_refs_from(blend_path: Path) -> List[Tuple[str, str]]:
             o += size
         return out
 
+    addr_fmt = endian + ("Q" if ptr_size == 8 else "I")
+
     refs: list[tuple[str, str]] = []
     for code, struct_name, field_candidates in _EXTERNAL_RECIPES:
         blocks = per_code.get(code, [])
@@ -666,7 +685,17 @@ def _read_external_refs_from(blend_path: Path) -> List[Tuple[str, str]]:
         if field is None:
             continue
         fp_off, fp_size = offs[field]
+        packed_ptr_offs = [
+            offs[pf][0]
+            for pf in _PACKED_INDICATOR_FIELDS.get(struct_name, ())
+            if pf in offs
+        ]
         for _, body in blocks:
+            if any(
+                struct.unpack_from(addr_fmt, body, off)[0]
+                for off in packed_ptr_offs
+            ):
+                continue
             raw = body[fp_off:fp_off + fp_size]
             path = raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
             if path:
